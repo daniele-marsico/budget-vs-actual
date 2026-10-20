@@ -4,6 +4,20 @@ Turns a monthly budget and the posted G/L entries from an ERP (Microsoft Dynamic
 
 > All data in this repository is **synthetic**. The fiscal year runs November → October.
 
+📘 **[Guida in italiano: come replicarlo da un cliente](COME_REPLICARE.md)**
+
+## The result
+
+![Preview of the Excel report](docs/report-preview.svg)
+
+What the reader gets, in three numbers (sample data, April 2026):
+
+| Operating result | Month vs budget | Year to date vs budget |
+|---:|---:|---:|
+| **€ 37,731** | **− € 27,244** (−41.9%) | **− € 887** (−0.3%) |
+
+…and, highlighted, the four accounts that explain the gap: product sales below budget, raw materials and travel above it, service revenue well above it.
+
 ## What it does
 
 1. Reads the **budget** (period × G/L account × cost center) and the **G/L entries** export.
@@ -35,14 +49,19 @@ The GitHub Action in `.github/workflows/monthly-report.yml` rebuilds the report 
 
 ## Using it with real data
 
-Replace the two CSV files in `data/` with your own exports:
+Put the ERP exports in `data/` as they come out of the system:
 
-| File | Required columns |
-|---|---|
-| `budget.csv` | `Period`, `G/L Account No.`, `G/L Account Name`, `Account Type` (Revenue/Cost), `Cost Center Code`, `Budget Amount` |
-| `actuals.csv` | `Posting Date`, `G/L Account No.`, `Cost Center Code`, `Amount` |
+| File | Business Central page | Columns used |
+|---|---|---|
+| `actuals.xlsx` / `.csv` | General Ledger Entries | Posting Date, G/L Account No., Amount, Global Dimension 1 Code (optional) |
+| `budget.xlsx` / `.csv` | G/L Budget Entries | Date, G/L Account No., Amount, Global Dimension 1 Code (optional) |
+| `accounts.xlsx` / `.csv` *(optional)* | Chart of Accounts | No., Name |
 
-In Business Central these come from the *G/L Budget Entries* and *General Ledger Entries* pages (export to Excel/CSV), or via the standard API / an OData web service for a fully automated feed.
+- Excel or CSV, comma or semicolon separated, amounts as `1234.56` or `1.234,56`
+- Column names in English or Italian (e.g. *Data di registrazione*, *Nr. conto C/G*, *Importo*)
+- Revenue vs cost is inferred from the sign, as in Business Central (credit = revenue)
+
+Step-by-step instructions, data requests and the checks to run before delivering are in the **[Italian guide](COME_REPLICARE.md)**.
 
 ## Possible extensions
 
