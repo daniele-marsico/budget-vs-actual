@@ -1,0 +1,33 @@
+name: Monthly variance report
+
+# Runs on the 5th of every month (after month-end close) and on demand.
+on:
+  schedule:
+    - cron: "0 6 5 * *"
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Reporting month (YYYY-MM). Leave empty for the latest month."
+        required: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python generate_sample_data.py
+      - name: Build report
+        run: |
+          if [ -n "${{ github.event.inputs.month }}" ]; then
+            python variance_report.py --month "${{ github.event.inputs.month }}"
+          else
+            python variance_report.py
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: variance-report
+          path: output/*.xlsx
