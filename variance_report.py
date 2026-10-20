@@ -19,6 +19,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from io_utils import find_file, read_any, standardise, to_date, to_number
+
 BASE = Path(__file__).parent
 DATA_DIR = BASE / "data"
 OUTPUT_DIR = BASE / "output"
@@ -34,21 +36,79 @@ THIN = Side(style="thin", color="BFBFBF")
 
 
 # ---------------------------------------------------------------- data ----
+# Column names accepted for each field (Business Central exports, EN and IT)
+ACCOUNT_NO = ["G/L Account No.", "Nr. conto C/G", "N. conto C/G", "Conto C/G", "Account No."]
+COST_CENTER = ["Global Dimension 1 Code", "Department Code", "Codice dimensione globale 1",
+               "Cod. dimensione globale 1", "Centro di costo", "Cod. reparto"]
+ACTUALS_ALIASES = {
+    "Posting Date": ["Data di registrazione", "Data registrazione"],
+    "G/L Account No.": ACCOUNT_NO,
+    "Amount": ["Importo"],
+    "Cost Center Code": COST_CENTER,
+}
+BUDGET_ALIASES = {
+    "Period": ["Date", "Data", "Periodo"],
+    "G/L Account No.": ACCOUNT_NO,
+    "G/L Account Name": ["Nome conto", "Account Name"],
+    "Account Type": ["Tipo conto"],
+    "Budget Amount": ["Amount", "Importo"],
+    "Cost Center Code": COST_CENTER,
+}
+
+
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    if not (DATA_DIR / "budget.csv").exists():
+    """Load budget and actuals from data/ (CSV or Excel, EN or IT column names).
+
+    If the budget has no "Account Type", it is inferred from the sign as in
+    Business Central: accounts with negative (credit) totals are revenue.
+    """
+    if not any(DATA_DIR.glob("budget.*")):
         import generate_sample_data
 
         generate_sample_data.main()
 
-    budget = pd.read_csv(DATA_DIR / "budget.csv", dtype={"G/L Account No.": str})
-    actuals = pd.read_csv(DATA_DIR / "actuals.csv", dtype={"G/L Account No.": str})
+    budget = standardise(read_any(find_file(DATA_DIR, "budget")), BUDGET_ALIASES,
+                         ["Period", "G/L Account No.", "Budget Amount"])
+    actuals = standardise(read_any(find_file(DATA_DIR, "actuals")), ACTUALS_ALIASES,
+                          ["Posting Date", "G/L Account No.", "Amount"])
 
-    budget["Period"] = pd.to_datetime(budget["Period"]).dt.to_period("M")
-    actuals["Period"] = pd.to_datetime(actuals["Posting Date"]).dt.to_period("M")
+    for df in (budget, actuals):
+        df["G/L Account No."] = df["G/L Account No."].astype(str).str.strip()
+        if "Cost Center Code" not in df.columns:
+            df["Cost Center Code"] = "-"
+        df["Cost Center Code"] = df["Cost Center Code"].fillna("-").astype(str)
+    budget["Budget Amount"] = to_number(budget["Budget Amount"])
+    actuals["Amount"] = to_number(actuals["Amount"])
+    budget["Period"] = to_date(budget["Period"]).dt.to_period("M")
+    actuals["Period"] = to_date(actuals["Posting Date"]).dt.to_period("M")
+    actuals = actuals.dropna(subset=["Period", "Amount"])
 
-    # Attach account master data to G/L entries and flip revenue sign
-    # (BC posts revenue as negative amounts).
-    accounts = budget[KEYS].drop_duplicates()
+    # Account master: from the budget when available, otherwise from the sign
+    if "Account Type" not in budget.columns:
+        sign = budget.groupby("G/L Account No.")["Budget Amount"].sum()
+        budget["Account Type"] = budget["G/L Account No."].map(lambda a: "Revenue" if sign[a] < 0 else "Cost")
+        budget.loc[budget["Account Type"] == "Revenue", "Budget Amount"] *= -1
+    if "G/L Account Name" not in budget.columns:
+        budget["G/L Account Name"] = budget["G/L Account No."]
+        # optional chart of accounts export (data/accounts.xlsx or .csv) for the names
+        if any(DATA_DIR.glob("accounts.*")):
+            coa = standardise(read_any(find_file(DATA_DIR, "accounts")),
+                              {"G/L Account No.": ACCOUNT_NO + ["Nr.", "No."], "G/L Account Name": ["Nome", "Name"]},
+                              ["G/L Account No.", "G/L Account Name"])
+            names = dict(zip(coa["G/L Account No."].astype(str).str.strip(), coa["G/L Account Name"]))
+            budget["G/L Account Name"] = budget["G/L Account No."].map(names).fillna(budget["G/L Account No."])
+    accounts = budget[KEYS].drop_duplicates("G/L Account No.")
+
+    # Accounts posted but not budgeted: type from the sign of the postings
+    extra = actuals.loc[~actuals["G/L Account No."].isin(accounts["G/L Account No."])]
+    if not extra.empty:
+        s = extra.groupby("G/L Account No.")["Amount"].sum()
+        accounts = pd.concat([accounts, pd.DataFrame({
+            "G/L Account No.": s.index, "G/L Account Name": s.index,
+            "Account Type": ["Revenue" if v < 0 else "Cost" for v in s]})])
+
+    # BC posts revenue as negative amounts: flip it to compare with the budget
+    actuals = actuals.drop(columns=[c for c in KEYS[1:] if c in actuals.columns])
     actuals = actuals.merge(accounts, on="G/L Account No.", how="left")
     actuals["Actual Amount"] = actuals["Amount"].where(
         actuals["Account Type"] != "Revenue", -actuals["Amount"]
